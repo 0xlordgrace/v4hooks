@@ -1,0 +1,58 @@
+# Ground truth for `v4hooks bench`.
+# A reported finding is a true positive if (contract, detector, function) matches an
+# `expect` entry. Anything else reported is a false positive. Contracts listed with
+# no expectations are clean negatives: any finding on them is a false positive.
+#
+# out_of_scope entries are real bugs that NONE of the three detectors target. They
+# are reported separately so the benchmark never hides what the tool cannot see.
+name: v4hooks-corpus
+scope:
+  - src/
+  - lib/uniswap-hooks/src/mocks/
+
+contracts:
+  # ── vulnerable repros (src/vulnerable) ──
+  CorkStyleHook:
+    expect:
+      - {detector: V4H-01, function: beforeSwap}
+      - {detector: V4H-02, function: beforeSwap}
+  UnguardedUnlockHook:
+    expect:
+      - {detector: V4H-01, function: unlockCallback}
+  WrongGuardHook:
+    expect:
+      - {detector: V4H-01, function: afterSwap}
+  AnyPoolPointsHook:
+    expect:
+      - {detector: V4H-02, function: _afterSwap}
+  DeadInitGuardHook:
+    expect:
+      - {detector: V4H-03, function: _beforeInitialize}
+      - {detector: V4H-02, function: _afterAddLiquidity}
+  BrickedSwapHook:
+    expect:
+      - {detector: V4H-03, function: getHookPermissions}
+  UnvalidatedFlagsHook:
+    # "never calls validateHookPermissions" is reported at info severity, which the
+    # benchmark does not score (same rule as the held-out sets).
+    expect: []
+  BunniStyleRoundingHook:
+    expect: []
+    out_of_scope:
+      - {class: rounding, function: withdraw, note: "share rounding favours withdrawer (Bunni v2 class)"}
+
+  # ── clean negatives ──
+  SinglePoolGuardedHook: {expect: []}
+  # OpenZeppelin uniswap-hooks v1.2.1 concrete examples
+  BaseAsyncSwapMock: {expect: []}
+  BaseCustomAccountingMock: {expect: []}
+  BaseCustomCurveMock: {expect: []}
+  BaseDynamicAfterFeeMock: {expect: []}
+  BaseDynamicFeeMock: {expect: []}
+  BaseHookFeeMock: {expect: []}
+  BaseOverrideFeeMock: {expect: []}
+  AntiSandwichMock: {expect: []}
+  LimitOrderHookMock: {expect: []}
+  LiquidityPenaltyHookMock: {expect: []}
+  ReHypothecationERC4626Mock: {expect: []}
+  ReHypothecationNativeMock: {expect: []}

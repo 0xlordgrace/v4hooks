@@ -1,0 +1,8 @@
+# Tiny dependency-free hooks project. Its AST is snapshotted into ../ast.json by
+# tests/fixtures/v4hooks/regen.py so unit tests run without forge.
+[profile.default]
+src = "src"
+out = "out"
+libs = []
+solc = "0.8.26"
+evm_version = "cancun"

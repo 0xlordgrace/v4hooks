@@ -1,0 +1,24 @@
+# Copy to .github/workflows/v4hooks.yml in your hook repository.
+name: v4hooks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  v4hooks:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write   # upload findings to Code Scanning
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive   # forge needs your lib/ dependencies
+
+      - uses: 0xlordgrace/v4hooks@main
+        with:
+          project: .          # where foundry.toml is
+          scope: src/         # what to report on
+          fail-on: high       # none | info | low | medium | high | critical

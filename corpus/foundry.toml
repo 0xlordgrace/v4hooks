@@ -1,0 +1,18 @@
+# Corpus for `v4hooks bench`. Pinned compiler so ASTs (and therefore
+# detector output) are reproducible.
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+solc = "0.8.26"
+evm_version = "cancun"
+optimizer = false
+remappings = [
+  "@uniswap/v4-core/=lib/uniswap-hooks/lib/v4-core/",
+  "@uniswap/v4-periphery/=lib/uniswap-hooks/lib/v4-periphery/",
+  "@openzeppelin/contracts/=lib/uniswap-hooks/lib/openzeppelin-contracts/contracts/",
+  "@openzeppelin/uniswap-hooks/=lib/uniswap-hooks/src/",
+  "forge-std/=lib/uniswap-hooks/lib/forge-std/src/",
+  "v4-core/=lib/uniswap-hooks/lib/v4-core/",
+  "solmate/=lib/uniswap-hooks/lib/v4-core/lib/solmate/",
+]

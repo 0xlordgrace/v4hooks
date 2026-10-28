@@ -1,0 +1,90 @@
+name: v4hooks
+description: Deterministic security scan for Uniswap v4 hooks, with findings in GitHub Code Scanning
+author: Ghost Orchid
+branding:
+  icon: shield
+  color: purple
+
+inputs:
+  project:
+    description: Path to the Foundry project (where foundry.toml is), relative to the repo root
+    default: "."
+  scope:
+    description: Space-separated source path prefixes to report on, relative to the project (default src/)
+    default: "src/"
+  fail-on:
+    description: "Fail the job if any finding is at least this severe: none, info, low, medium, high, critical"
+    default: "low"
+  sarif-file:
+    description: Where to write the SARIF report
+    default: v4hooks.sarif
+  upload-sarif:
+    description: "Upload the SARIF to GitHub Code Scanning (needs `security-events: write`; private repos need GitHub Advanced Security)"
+    default: "true"
+  foundry-version:
+    description: Foundry toolchain version passed to foundry-rs/foundry-toolchain
+    default: stable
+  python-version:
+    description: Python version used to run the scanner
+    default: "3.12"
+
+outputs:
+  findings:
+    description: Number of findings
+    value: ${{ steps.scan.outputs.findings }}
+  sarif-file:
+    description: Path of the SARIF report
+    value: ${{ inputs.sarif-file }}
+
+runs:
+  using: composite
+  steps:
+    - uses: foundry-rs/foundry-toolchain@v1
+      with:
+        version: ${{ inputs.foundry-version }}
+
+    - uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install v4hooks
+      shell: bash
+      run: python -m pip install --quiet "${{ github.action_path }}"
+
+    - name: Scan
+      id: scan
+      shell: bash
+      env:
+        PROJECT: ${{ inputs.project }}
+        SCOPE: ${{ inputs.scope }}
+        FAIL_ON: ${{ inputs.fail-on }}
+        SARIF: ${{ inputs.sarif-file }}
+      run: |
+        scope_args=()
+        for s in $SCOPE; do scope_args+=(--scope "$s"); done
+        prefix="${PROJECT#./}"; [ "$prefix" = "." ] && prefix=""
+        set +e
+        v4hooks scan "$PROJECT" "${scope_args[@]}" --fail-on "$FAIL_ON" \
+          --sarif "$SARIF" --uri-prefix "$prefix" --json v4hooks-findings.json
+        code=$?
+        set -e
+        if [ "$code" -eq 2 ]; then echo "::error::v4hooks could not build the project"; exit 2; fi
+        findings=$(python -c "import json;print(len(json.load(open('v4hooks-findings.json'))['findings']))")
+        echo "findings=$findings" >> "$GITHUB_OUTPUT"
+        echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+        echo "### v4hooks: $findings finding(s)" >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Upload SARIF to Code Scanning
+      if: inputs.upload-sarif == 'true'
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ inputs.sarif-file }}
+        category: v4hooks
+
+    - name: Apply fail-on
+      shell: bash
+      run: |
+        if [ "${{ steps.scan.outputs.exit_code }}" = "1" ]; then
+          echo "::error::v4hooks found issues at or above '${{ inputs.fail-on }}'"
+          exit 1
+        fi

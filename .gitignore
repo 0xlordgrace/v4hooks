@@ -1,0 +1,13 @@
+__pycache__/
+*.egg-info/
+build/
+dist/
+.venv/
+corpus/lib/
+corpus/out/
+corpus/cache/
+tests/fixtures/v4hooks/project/out/
+tests/fixtures/v4hooks/project/cache/
+*.sarif
+scan.json
+v4hooks-findings.json

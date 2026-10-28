@@ -1,0 +1,22 @@
+name: action self-test
+on: [push, pull_request]
+jobs:
+  self-test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - run: corpus/setup.sh
+      - id: v4hooks
+        uses: ./
+        with:
+          project: corpus
+          scope: src/vulnerable/ src/clean/
+          fail-on: none
+          upload-sarif: "false"
+      - name: Check the corpus findings
+        run: |
+          test "${{ steps.v4hooks.outputs.findings }}" -ge 8
+          python -c "import json; r=json.load(open('v4hooks.sarif'))['runs'][0]['results']; \
+            assert all(x['locations'][0]['physicalLocation']['artifactLocation']['uri'].startswith('corpus/') for x in r); print(len(r), 'results')"

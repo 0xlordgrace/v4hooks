@@ -1,0 +1,20 @@
+name: test
+on: [push, pull_request]
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -e ".[report,bench]" pytest
+      - run: pytest -m "not integration" -q
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - uses: foundry-rs/foundry-toolchain@v1
+      - run: pip install -e ".[report,bench]" pytest && corpus/setup.sh
+      - run: pytest -m integration -q

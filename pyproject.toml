@@ -1,0 +1,35 @@
+# Standalone package for the v4hooks scanner, so hook teams can install it without
+# anything else:
+#
+#   pip install "git+https://github.com/0xlordgrace/v4hooks"
+#
+# Core scanning has no dependencies (it reads solc's AST from forge's build-info).
+# Needs Foundry's `forge` on PATH.
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "v4hooks"
+version = "0.1.0"
+description = "Deterministic security scanner for Uniswap v4 hooks (solc AST; SARIF output)"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+report = ["httpx>=0.25"]   # `v4hooks explain` with a model
+bench = ["pyyaml>=6.0"]    # `v4hooks bench`
+
+[project.scripts]
+v4hooks = "v4hooks.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/0xlordgrace/v4hooks"
+
+[tool.setuptools]
+packages = ["v4hooks", "v4hooks.detectors"]
+
+[tool.pytest.ini_options]
+markers = ["integration: needs forge and corpus/setup.sh"]
