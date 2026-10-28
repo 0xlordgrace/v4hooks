@@ -19,7 +19,6 @@ requires-python = ">=3.10"
 dependencies = []
 
 [project.optional-dependencies]
-report = ["httpx>=0.25"]   # `v4hooks explain` with a model
 bench = ["pyyaml>=6.0"]    # `v4hooks bench`
 
 [project.scripts]

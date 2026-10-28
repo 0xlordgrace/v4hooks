@@ -214,3 +214,9 @@ def test_assembly_storage_write_counts_as_consequence(hooks):
     # Yul writes can't be traced to their readers, so they stay reportable (Gamma LimitOrderHook).
     [f] = DETECTORS_BY_ID["V4H-01"].run(hooks["Pos_01_TransientWrite"])
     assert f.severity == "high"
+
+
+def test_super_permissions_chain_is_followed(hooks):
+    # Base sets beforeSwap, override adds afterSwap via `p = super._hookPerms()`.
+    got = _ids(hooks, "Pos_03_SuperPermissionsNoImpl", "V4H-03")
+    assert [ev["callback"] for _, ev in got] == ["afterSwap"]

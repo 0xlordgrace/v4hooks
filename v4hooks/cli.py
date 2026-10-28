@@ -41,6 +41,14 @@ def _scan(args: argparse.Namespace) -> int:
     for f in result.findings:
         print(f"{f.file}:{f.line_start}: {f.detector} [{f.severity}/{f.confidence}] {f.contract}.{f.function}: {f.message}")
     print(f"{len(result.hooks)} hook(s) scanned, {len(result.findings)} finding(s)")
+    if args.github_annotations:
+        prefix = (args.uri_prefix or "").strip("/")
+        for f in result.findings:
+            level = {"critical": "error", "high": "error", "medium": "warning", "low": "warning"}.get(f.severity, "notice")
+            path = f"{prefix}/{f.file}" if prefix else f.file
+            msg = f.message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+            print(f"::{level} file={path},line={f.line_start},endLine={f.line_end},"
+                  f"title={f.detector} {f.contract}.{f.function}::{msg}")
     if args.json:
         Path(args.json).write_text(result.to_json())
     if args.sarif:
@@ -64,7 +72,12 @@ def _explain(args: argparse.Namespace) -> int:
         if backend is None:
             print("no model configured (--base-url/--model or V4HOOKS_BASE_URL/V4HOOKS_MODEL); template report",
                   file=sys.stderr)
-    md = explain(findings, backend, scan_sha256=hashlib.sha256(raw).hexdigest()[:16]).to_markdown()
+    report = explain(findings, backend, scan_sha256=hashlib.sha256(raw).hexdigest()[:16])
+    fallen = [i.source for i in report.items if i.source.startswith("template (")]
+    if fallen:
+        print(f"warning: {len(fallen)} of {len(report.items)} finding(s) fell back to the template; "
+              f"first reason: {fallen[0][len('template ('):-1]}", file=sys.stderr)
+    md = report.to_markdown()
     if args.out:
         Path(args.out).write_text(md)
     else:
@@ -105,6 +118,8 @@ def _prove(args: argparse.Namespace) -> int:
     except BuildError as e:
         print(str(e), file=sys.stderr)
         return 2
+    if not run.proofs:
+        print("no V4H-01 findings to prove (prove only covers V4H-01: callbacks a stranger can call)")
     for p in run.proofs:
         print(f"{p.status:12} {p.contract}.{p.callback}" + (f"  ({p.reason})" if p.reason else ""))
     counts = {s: sum(p.status == s for p in run.proofs) for s in ("proven", "reaches-pm", "reverted", "no-effect",
@@ -128,6 +143,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--json", help="write findings JSON here")
     s.add_argument("--sarif", help="write SARIF 2.1.0 here (GitHub Code Scanning)")
     s.add_argument("--uri-prefix", help="path from the repo root to the project, for SARIF file links")
+    s.add_argument("--github-annotations", action="store_true",
+                   help="also print GitHub workflow-command annotations (PR diff annotations without Code Scanning)")
     s.add_argument("--fail-on", choices=FAIL_ON, default="low",
                    help="exit 1 if any finding is at least this severe (default: low)")
     s.set_defaults(func=_scan)

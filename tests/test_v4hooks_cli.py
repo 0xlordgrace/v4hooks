@@ -105,6 +105,20 @@ def test_cli_fail_on_threshold(tmp_path, build_info):
     assert p.returncode == 0 and "0 finding" in p.stdout
 
 
+def test_cli_github_annotations(tmp_path, build_info):
+    # Stranger test: private repos without Advanced Security get no Code Scanning, so the
+    # Action also emits workflow-command annotations, which GitHub shows on the PR diff.
+    env = _standalone_env(tmp_path)
+    p = _cli(["scan", ".", "--build-info", str(build_info), "--scope", "src/Cases", "--fail-on", "none",
+              "--github-annotations", "--uri-prefix", "hooks"], env=env)
+    lines = [ln for ln in p.stdout.splitlines() if ln.startswith("::")]
+    assert lines and all(ln.split(" ", 1)[0] in ("::error", "::warning", "::notice") for ln in lines)
+    first = lines[0]
+    assert "file=hooks/src/Cases.sol,line=" in first and "title=V4H-0" in first
+    # Workflow commands need %, CR and LF escaped in the message.
+    assert all("\n" not in ln.split("::", 2)[2] for ln in lines)
+
+
 def test_cli_explain_template(tmp_path, build_info):
     env = _standalone_env(tmp_path)
     scan = tmp_path / "scan.json"

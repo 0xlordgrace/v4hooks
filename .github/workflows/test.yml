@@ -7,7 +7,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - run: pip install -e ".[report,bench]" pytest
+      - run: pip install -e ".[bench]" pytest
       - run: pytest -m "not integration" -q
   integration:
     runs-on: ubuntu-latest
@@ -16,5 +16,5 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - uses: foundry-rs/foundry-toolchain@v1
-      - run: pip install -e ".[report,bench]" pytest && corpus/setup.sh
+      - run: pip install -e ".[bench]" pytest && corpus/setup.sh
       - run: pytest -m integration -q

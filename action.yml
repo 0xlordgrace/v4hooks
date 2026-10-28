@@ -19,7 +19,7 @@ inputs:
     description: Where to write the SARIF report
     default: v4hooks.sarif
   upload-sarif:
-    description: "Upload the SARIF to GitHub Code Scanning (needs `security-events: write`; private repos need GitHub Advanced Security)"
+    description: "Upload the SARIF to GitHub Code Scanning (needs `security-events: write`; private repos need GitHub Advanced Security). PR annotations are emitted either way."
     default: "true"
   foundry-version:
     description: Foundry toolchain version passed to foundry-rs/foundry-toolchain
@@ -65,7 +65,7 @@ runs:
         prefix="${PROJECT#./}"; [ "$prefix" = "." ] && prefix=""
         set +e
         v4hooks scan "$PROJECT" "${scope_args[@]}" --fail-on "$FAIL_ON" \
-          --sarif "$SARIF" --uri-prefix "$prefix" --json v4hooks-findings.json
+          --sarif "$SARIF" --uri-prefix "$prefix" --json v4hooks-findings.json --github-annotations
         code=$?
         set -e
         if [ "$code" -eq 2 ]; then echo "::error::v4hooks could not build the project"; exit 2; fi

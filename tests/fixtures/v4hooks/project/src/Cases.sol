@@ -1441,3 +1441,80 @@ contract Pos_02_ControllerHelperOnlyGate is BaseHook {
         return this.afterSwap.selector;
     }
 }
+
+// ── Stranger-test root causes (FablesFi/fables shapes; each written to fail first) ──
+
+/// Permissions built by an internal virtual helper that a derived hook extends via super.
+abstract contract SuperPermsBase is BaseHook {
+    uint256 public swaps;
+
+    constructor(IPoolManager m) BaseHook(m) {}
+
+    function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
+        return _hookPerms();
+    }
+
+    function _hookPerms() internal pure virtual returns (Hooks.Permissions memory p) {
+        p.beforeSwap = true;
+    }
+
+    function _beforeSwap(address, PoolKey calldata key, SwapParams calldata, bytes calldata)
+        internal
+        override
+        returns (bytes4)
+    {
+        require(key.hooks == address(this), "pool");
+        swaps += 1;
+        return this.beforeSwap.selector;
+    }
+}
+
+contract Neg_03_SuperPermissions is SuperPermsBase {
+    uint256 public adds;
+
+    constructor(IPoolManager m) SuperPermsBase(m) {}
+
+    function _hookPerms() internal pure override returns (Hooks.Permissions memory p) {
+        p = super._hookPerms();
+        p.beforeAddLiquidity = true;
+    }
+
+    function _beforeAddLiquidity(address, PoolKey calldata key, ModifyLiquidityParams calldata, bytes calldata)
+        internal
+        override
+        returns (bytes4)
+    {
+        require(key.hooks == address(this), "pool");
+        adds += 1;
+        return this.beforeAddLiquidity.selector;
+    }
+}
+
+/// The super chain still counts: a flag added in the override with no callback is flagged.
+contract Pos_03_SuperPermissionsNoImpl is SuperPermsBase {
+    constructor(IPoolManager m) SuperPermsBase(m) {}
+
+    function _hookPerms() internal pure override returns (Hooks.Permissions memory p) {
+        p = super._hookPerms();
+        p.afterSwap = true;
+    }
+}
+
+/// A callback served by an assembly fallback that dispatches on the selector.
+contract Neg_03_FallbackDispatch is BaseHook {
+    bytes4 constant BEFORE_SWAP = 0x575e24b4;
+
+    constructor(IPoolManager m) BaseHook(m) {}
+
+    function getHookPermissions() public pure override returns (Hooks.Permissions memory p) {
+        p.beforeSwap = true;
+    }
+
+    fallback() external {
+        require(msg.sender == address(poolManager) && msg.sig == BEFORE_SWAP, "pm");
+        assembly {
+            mstore(0x00, shl(224, 0x575e24b4))
+            return(0x00, 0x60)
+        }
+    }
+}

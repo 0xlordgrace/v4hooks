@@ -167,3 +167,24 @@ def test_bench_matches_callback_entry_and_implementation_names():
 
     assert _norm_fn("_beforeSwap") == _norm_fn("beforeSwap") == "beforeSwap"
     assert _norm_fn("unlockCallback") == "unlockCallback"
+
+
+def test_model_path_needs_no_optional_dependency(monkeypatch):
+    # Stranger test: `explain --base-url` on a plain install (no [report] extra) silently
+    # fell back to templates with "ModuleNotFoundError". The stdlib must be enough.
+    monkeypatch.setitem(sys.modules, "httpx", None)
+    with FakeOpenAIServer([_reply()]) as srv:
+        rep = explain([_finding()], _backend(srv))
+    assert rep.items[0].source == "model"
+
+
+def test_cli_warns_when_model_replies_are_rejected(tmp_path, capsys):
+    from v4hooks.cli import main
+
+    scan = tmp_path / "scan.json"
+    scan.write_text(json.dumps({"findings": [_finding().to_dict()]}))
+    # Nothing listens here: every finding falls back, and the user must be told why.
+    code = main(["explain", str(scan), "--base-url", "http://127.0.0.1:9/v1", "--model", "m",
+                 "-o", str(tmp_path / "r.md")])
+    err = capsys.readouterr().err
+    assert code == 0 and "1 of 1 finding(s) fell back to the template" in err and "backend error" in err

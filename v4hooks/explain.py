@@ -21,6 +21,8 @@ import hashlib
 import json
 import os
 import re
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 from urllib.parse import urlparse
@@ -109,14 +111,21 @@ class OpenAICompatBackend:
 
     def _post(self, url: str, body: dict[str, Any], headers: dict[str, str]) -> str | None:
         """Reply text, or None if the server rejected JSON mode with a 400."""
-        import httpx  # optional dependency: only needed when a model is configured
-
-        resp = httpx.post(url, json=body, headers=headers, timeout=self.timeout)
-        if resp.status_code == 400 and "response_format" in body:
-            return None
-        resp.raise_for_status()
-        data = resp.json()
+        req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST",
+                                     headers={"Content-Type": "application/json", **headers})
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                data = json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            if e.code == 400 and "response_format" in body:
+                return None
+            hint = " (set --api-key-env to the name of the variable holding the key)" if e.code in (401, 403) else ""
+            raise BackendError(f"HTTP {e.code}{hint}") from None
         return ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+
+
+class BackendError(Exception):
+    """The model server answered with an error (message is safe to show)."""
 
 
 def extract_json(text: str) -> dict[str, Any] | None:
@@ -286,7 +295,8 @@ def explain(findings: list[HookFinding], backend: Backend | None = None, scan_sh
             reply = extract_json(raw)
             reason = validate_reply(f, reply)
         except Exception as e:  # network / server errors degrade to template, never abort the report
-            reply, reason = None, f"backend error: {type(e).__name__}"
+            detail = str(e) if isinstance(e, BackendError) else type(e).__name__
+            reply, reason = None, f"backend error: {detail}"
         if reason:
             base.source = f"template (model output rejected: {reason})"
             items.append(base)

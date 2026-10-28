@@ -15,10 +15,11 @@ hooks":
 ## Quick start
 
 Scanning needs only
-Python 3.10+ and Foundry's `forge` on PATH.
+Python 3.10+ and Foundry's `forge` on PATH. macOS ships Python 3.9, so use
+[uv](https://docs.astral.sh/uv/) (it fetches a suitable Python) or a newer `python3 -m venv`.
 
 ```bash
-pip install "git+https://github.com/0xlordgrace/v4hooks"
+uv tool install "git+https://github.com/0xlordgrace/v4hooks"   # or: pip install "git+https://github.com/0xlordgrace/v4hooks"
 
 v4hooks scan path/to/foundry-project                     # findings to stdout; exit 1 at/above --fail-on
 v4hooks scan . --sarif v4hooks.sarif --json scan.json    # SARIF for Code Scanning, JSON for reports
@@ -34,8 +35,8 @@ v4hooks explain scan.json --base-url http://localhost:11434/v1 --model qwen2.5-c
 - `--build-info DIR`: reuse an existing `forge build --build-info` output.
 - `--uri-prefix`: the path from the repo root to the project, for SARIF links.
 
-Extras: `pip install "v4hooks[report]"` adds `httpx` for model-written reports, and
-`[bench]` adds `pyyaml` for `v4hooks bench`.
+Model-written reports need no extra packages. `pip install "v4hooks[bench]"` adds `pyyaml`
+for `v4hooks bench`.
 
 ## Use in CI (GitHub Action)
 
@@ -56,8 +57,9 @@ steps:
 
 The Action installs Foundry, builds your project and runs the scan. It uploads the
 findings to **Code Scanning**, so they appear as annotations on pull requests, then
-fails the job according to `fail-on`. On private repositories, Code Scanning needs
-GitHub Advanced Security; set `upload-sarif: false` to only gate on `fail-on`.
+fails the job according to `fail-on`. Findings are also emitted as workflow annotations,
+so they show on the PR diff even without Code Scanning. On private repositories, Code
+Scanning needs GitHub Advanced Security; set `upload-sarif: false` there.
 The SARIF file stays in the workspace for other steps.
 
 ## How it works
@@ -167,7 +169,7 @@ v4hooks bench
 ## Tests
 
 ```bash
-pip install -e ".[report,bench]" pytest
+pip install -e ".[bench]" pytest
 pytest -m "not integration"            # no forge needed
 corpus/setup.sh && pytest -m integration   # needs forge
 ```

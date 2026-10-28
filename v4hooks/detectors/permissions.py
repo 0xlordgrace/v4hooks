@@ -53,7 +53,9 @@ def permissions_function(hook: Hook) -> Node | None:
                     and not ref["parameters"]["parameters"]
                     and _returns_permissions(ref)
                 ):
-                    return ref
+                    # Dispatch virtually: a derived hook may override the helper.
+                    found = hook.contract.resolve(ref.get("name", ""), 0)
+                    return found[0] if found else ref
     return None
 
 
@@ -75,6 +77,13 @@ def parse_permissions(hook: Hook) -> Flags | None:
     fn = permissions_function(hook)
     if fn is None:
         return None
+    return _parse_fn(hook, fn, depth=0)
+
+
+def _parse_fn(hook: Hook, fn: Node, depth: int) -> Flags:
+    """Flags one permissions function returns. A body that starts from another
+    Permissions-returning call (`return _perms();`, `p = super._perms(); p.x = true;`)
+    takes that call's flags, then applies its own field writes on top."""
     body = fn.get("body") or {}
     ctors = [(r.get("expression") or {}) for r in of_type(body, "Return")]
     ctors += [a.get("rightHandSide") or {} for a in of_type(body, "Assignment")]  # p = Hooks.Permissions(...)
@@ -87,6 +96,11 @@ def parse_permissions(hook: Hook) -> Flags | None:
             }
     # Field-write form: memory structs start zeroed, so unspecified flags are false.
     flags: Flags = {f: False for f in FLAGS}
+    for expr in ctors:
+        target = _permissions_callee(hook, fn, expr) if depth < 8 else None
+        if target is not None:
+            flags = _parse_fn(hook, target, depth + 1)
+            break
     for asg in of_type(body, "Assignment"):
         lhs = asg.get("leftHandSide", {})
         if lhs.get("nodeType") == "MemberAccess" and lhs.get("memberName") in FLAGS:
@@ -108,3 +122,32 @@ def _literal_bool(node: Node) -> bool | None:
     if node.get("nodeType") == "Literal" and node.get("kind") == "bool":
         return node.get("value") == "true"
     return None
+
+
+def _permissions_callee(hook: Hook, caller: Node, call: Node) -> Node | None:
+    """The function a Permissions-returning call runs, resolved the way the EVM
+    would for this hook: virtual calls to the most-derived override, `super.f()`
+    to the next definition after the caller's contract in the linearization."""
+    if call.get("nodeType") != "FunctionCall" or call.get("arguments"):
+        return None
+    callee = call.get("expression") or {}
+    name = callee.get("name") or callee.get("memberName")
+    if not name:
+        return None
+    if callee.get("nodeType") == "MemberAccess":
+        base = callee.get("expression") or {}
+        if base.get("nodeType") != "Identifier" or base.get("name") != "super":
+            return None
+        seen_caller = False
+        for c in hook.contract.linearized():
+            for f in c.own_functions():
+                if seen_caller and f.get("name") == name and f.get("implemented") and not f["parameters"]["parameters"]:
+                    return f if _returns_permissions(f) else None
+                if f.get("id") == caller.get("id"):
+                    seen_caller = True
+        return None
+    ref = hook.unit.by_id.get(callee.get("referencedDeclaration", -1))
+    if not ref or ref.get("nodeType") != "FunctionDefinition" or not _returns_permissions(ref):
+        return None
+    found = hook.contract.resolve(name, 0)
+    return found[0] if found and found[0].get("id") != caller.get("id") else ref

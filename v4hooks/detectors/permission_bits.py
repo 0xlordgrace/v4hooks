@@ -29,7 +29,8 @@ class PermissionBitMismatch:
         for name in CALLBACKS:
             flag = flags.get(name)
             impl = hook.implementation(name)
-            if flag is True and (impl is None or _is_unimplemented_default(impl)) and not _deliberate_block(hook, flags, name):
+            if flag is True and (impl is None or _is_unimplemented_default(impl)) \
+                    and not _deliberate_block(hook, flags, name) and not _serving_fallback(hook):
                 findings.append(
                     hook.finding(
                         self.id, self.title, "high", perm_fn,
@@ -92,6 +93,16 @@ def _is_unimplemented_default(impl: tuple[Node, object]) -> bool:
         n.get("name") == "HookNotImplemented" or n.get("memberName") == "HookNotImplemented"
         for n in of_type(fn.get("body"), "Identifier", "MemberAccess")
     )
+
+
+def _serving_fallback(hook: Hook) -> bool:
+    """A fallback() that does not always revert may serve any callback by selector
+    (seen in assembly-dispatching hooks), so "never implements" can't be confirmed."""
+    for c in hook.contract.linearized():
+        for f in c.own_functions():
+            if f.get("kind") == "fallback" and f.get("implemented") and not always_reverts(f):
+                return True
+    return False
 
 
 def _deliberate_block(hook: Hook, flags: dict, name: str) -> bool:
