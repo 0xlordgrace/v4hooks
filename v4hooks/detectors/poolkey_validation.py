@@ -53,12 +53,20 @@ class UnvalidatedPoolKey:
             entry = hook.callback(name)
             impl = hook.implementation(name)
             assert entry and impl
-            body = hook.contract.reachable(impl[0])
+            body = _with_lock_callbacks(hook, hook.contract.reachable(impl[0]))
+            # Who is acting: the sender and the hookData they passed, not the PoolKey
+            # (state looked up by key.currency0 belongs to whoever stored it).
+            callers = _derived_ids(
+                hook, body,
+                {p["id"] for f in (entry[0], impl[0]) for p in f["parameters"]["parameters"]
+                 if type_string(p) in ("address", "bytes")},
+                lambda n: False)
+            pulls = sorted({p for f in body for p in third_party_pulls(f, callers, hook)})
             per_position = _trusted_salt(hook, name, enabled, body)
             shared_writes = sorted({w for f in body for w in shared_state_writes(hook, f, per_position)})
             moves = sorted({m for f in body for m in key_currency_moves(f, hook)})
             external = sorted({e for f in body for e in external_state_calls(f, hook)})
-            if not shared_writes and not moves and not external:
+            if not shared_writes and not moves and not external and not pulls:
                 continue
             reach = hook.contract.reachable(entry[0])
             gate_fns = [entry[0], impl[0]]
@@ -69,6 +77,8 @@ class UnvalidatedPoolKey:
                 what.append(f"writes pool-agnostic state ({', '.join(shared_writes)})")
             if moves:
                 what.append(f"moves tokens chosen by the PoolKey ({', '.join(moves)})")
+            if pulls:
+                what.append(f"pulls stored users' approved tokens ({', '.join(pulls)})")
             if external:
                 what.append(f"changes state in another contract ({', '.join(external)})")
             init_note = (
@@ -81,16 +91,17 @@ class UnvalidatedPoolKey:
                 hook.finding(
                     self.id,
                     self.title,
-                    "high" if moves else "medium",
+                    "high" if moves or pulls else "medium",
                     impl[0],
                     f"{hook.name}.{name} {' and '.join(what)}, but {init_note} and the callback never "
                     "compares the PoolKey/PoolId against an allowed pool. Any pool can attach to this hook.",
-                    confidence="confirmed" if (moves or external or gated) else "pattern",
+                    confidence="confirmed" if (moves or pulls or external or gated) else "pattern",
                     gated_shared_writes=gated,
                     callback=name,
                     shared_state_writes=shared_writes,
                     key_currency_moves=moves,
                     external_state_calls=external,
+                    third_party_pulls=pulls,
                     before_initialize_enabled=enabled("beforeInitialize"),
                 )
             )
@@ -335,6 +346,12 @@ def _derived_ids(hook: Hook, fns: list[Node], seeds: set[int], is_source) -> set
                 if lhs.get("nodeType") == "Identifier" and derived(a.get("rightHandSide")):
                     tainted.add(lhs.get("referencedDeclaration"))
             for call in of_type(body, "FunctionCall"):
+                target = _encode_call_target(hook, call)
+                if target is not None:
+                    for arg, prm in zip(_encode_call_args(call), target["parameters"]["parameters"]):
+                        if derived(arg):
+                            tainted.add(prm["id"])
+                    continue
                 ref = hook.unit.by_id.get((call.get("expression") or {}).get("referencedDeclaration", -1)) or {}
                 if ref.get("nodeType") != "FunctionDefinition":
                     continue
@@ -343,6 +360,83 @@ def _derived_ids(hook: Hook, fns: list[Node], seeds: set[int], is_source) -> set
                         tainted.add(prm["id"])
         changed = len(tainted) != before
     return tainted
+
+
+def _encode_call_target(hook: Hook, call: Node) -> Node | None:
+    """``abi.encodeCall(this.X, (...))``: the hook function X, else None."""
+    expr = call.get("expression") or {}
+    if expr.get("memberName") != "encodeCall" or not call.get("arguments"):
+        return None
+    fn = call["arguments"][0]
+    if fn.get("nodeType") != "MemberAccess" or (fn.get("expression") or {}).get("name") != "this":
+        return None
+    ref = hook.unit.by_id.get(fn.get("referencedDeclaration", -1)) or {}
+    return ref if ref.get("nodeType") == "FunctionDefinition" else None
+
+
+def _encode_call_args(call: Node) -> list[Node]:
+    if len(call["arguments"]) < 2:
+        return []
+    t = call["arguments"][1]
+    return t.get("components", []) if t.get("nodeType") == "TupleExpression" else [t]
+
+
+def _with_lock_callbacks(hook: Hook, fns: list[Node]) -> list[Node]:
+    """Pre-release hooks call ``poolManager.lock(abi.encodeCall(this.X, ...))`` from a
+    callback; BaseHook's lockAcquired then self-calls X (Hedge). X runs on behalf of the
+    calling pool, so its effects count as the callback's. (Current v4 can't unlock from
+    inside a callback, so only ``lock`` is followed.)"""
+    out, seen = list(fns), {f.get("id") for f in fns}
+    for f in fns:
+        for call in of_type(f.get("body"), "FunctionCall"):
+            expr = call.get("expression") or {}
+            if expr.get("memberName") != "lock" or "PoolManager" not in type_string(expr.get("expression") or {}):
+                continue
+            for enc in (c for a in call.get("arguments", []) for c in of_type(a, "FunctionCall")):
+                target = _encode_call_target(hook, enc)
+                if target is None:
+                    continue
+                for g in hook.contract.reachable(target):
+                    if g.get("id") not in seen:
+                        seen.add(g.get("id"))
+                        out.append(g)
+    return out
+
+
+def third_party_pulls(fn: Node, callers: set[int], hook: Hook) -> list[str]:
+    """``token.transferFrom(from, ...)`` where ``from`` is neither the hook nor derived
+    from the callback's own arguments: an account the hook stored (Hedge's trigger
+    owners), whose approval any pool attached to the hook can spend.
+
+    Library bodies are skipped: CurrencySettler's ``transferFrom(payer, ...)`` is judged
+    by its call site (``payer`` is usually ``address(this)``). Known blind spot: a library
+    helper handed a stored owner."""
+    if fn.get("id") in hook.unit.library_functions:
+        return []
+    out = []
+    for call in of_type(fn.get("body"), "FunctionCall"):
+        expr = call.get("expression") or {}
+        if expr.get("nodeType") != "MemberAccess" or expr.get("memberName") not in ("transferFrom", "safeTransferFrom"):
+            continue
+        args = call.get("arguments", [])
+        if len(args) < 3 or type_string(args[0]) != "address":
+            continue
+        frm = args[0]
+        nodes = list(of_type(frm, "Identifier", "MemberAccess", "FunctionCall"))
+        if any(n.get("name") == "this" or n.get("memberName") == "origin" for n in nodes) or is_msg_sender(frm):
+            continue
+        if any(n.get("referencedDeclaration") in callers for n in nodes):
+            continue
+        if not any(n.get("nodeType") in ("Identifier", "MemberAccess") for n in nodes):
+            continue  # a literal
+        out.append(f"{expr['memberName']}({_src_name(frm)})")
+    return out
+
+
+def _src_name(e: Node) -> str:
+    if e.get("nodeType") == "MemberAccess":
+        return f"{_src_name(e.get('expression') or {})}.{e.get('memberName')}"
+    return e.get("name", "?")
 
 
 def key_currency_moves(fn: Node, hook: Hook | None = None) -> list[str]:

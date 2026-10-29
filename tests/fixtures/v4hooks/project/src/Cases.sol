@@ -1610,3 +1610,137 @@ contract Pos_02_SaltCheckNotTrusted is SaltPositionsBase {
         return this.beforeRemoveLiquidity.selector;
     }
 }
+
+interface IERC20Min {
+    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+}
+
+interface IPoolManagerLock2023 {
+    function lock(bytes calldata data) external returns (bytes memory);
+}
+
+/// Pre-release lock API (Hedge, Dec 2023): PoolManager.lock(data) calls lockAcquired, and
+/// BaseHook's lockAcquired self-calls `data` (an abi.encodeCall(this.X, ...)).
+abstract contract LockHook2023 is BaseHook2023 {
+    IPoolManagerLock2023 public immutable lockPoolManager;
+
+    struct Trigger {
+        address owner;
+        address token;
+        uint256 amount;
+    }
+
+    mapping(Currency => Trigger[]) internal triggersByCurrency;
+    mapping(PoolId => bool) internal registered;
+
+    constructor(IPoolManager m, IPoolManagerLock2023 l) BaseHook2023(m) {
+        lockPoolManager = l;
+    }
+
+    function getHooksCalls() public pure override returns (Hooks2023.Calls memory c) {
+        c.afterSwap = true;
+    }
+
+    function lockAcquired(uint256, bytes calldata data) external returns (bytes memory) {
+        require(msg.sender == address(lockPoolManager));
+        (bool ok, bytes memory ret) = address(this).call(data);
+        require(ok);
+        return ret;
+    }
+
+    modifier selfOnly() {
+        require(msg.sender == address(this));
+        _;
+    }
+}
+
+// Hedge shape: afterSwap writes no storage, but each stored trigger's owner has their
+// approved tokens pulled into whichever pool called, through lock -> own callback. The
+// currency-keyed exit is no pool gate, so an attacker's pool drains every trigger owner.
+contract Pos_02_LockPullsStoredOwners is LockHook2023 {
+    constructor(IPoolManager m, IPoolManagerLock2023 l) LockHook2023(m, l) {}
+
+    function afterSwap(address, PoolKey calldata key, SwapParams calldata, int256)
+        external
+        override
+        returns (bytes4)
+    {
+        require(msg.sender == address(poolManager));
+        Trigger[] memory ts = triggersByCurrency[key.currency0];
+        if (ts.length == 0) return this.afterSwap.selector;
+        for (uint256 i = 0; i < ts.length; i++) {
+            lockPoolManager.lock(abi.encodeCall(this.lockAcquiredHedge, (key, ts[i])));
+        }
+        return this.afterSwap.selector;
+    }
+
+    function lockAcquiredHedge(PoolKey calldata, Trigger memory t) external selfOnly {
+        IERC20Min(t.token).transferFrom(t.owner, address(lockPoolManager), t.amount);
+    }
+}
+
+// Same flow, but only registered pools get past the first statement.
+contract Neg_02_LockPoolGated is LockHook2023 {
+    using PoolIdLibrary for PoolKey;
+
+    constructor(IPoolManager m, IPoolManagerLock2023 l) LockHook2023(m, l) {}
+
+    function afterSwap(address, PoolKey calldata key, SwapParams calldata, int256)
+        external
+        override
+        returns (bytes4)
+    {
+        require(msg.sender == address(poolManager));
+        if (!registered[key.toId()]) return this.afterSwap.selector;
+        Trigger[] memory ts = triggersByCurrency[key.currency0];
+        for (uint256 i = 0; i < ts.length; i++) {
+            lockPoolManager.lock(abi.encodeCall(this.lockAcquiredHedge, (key, ts[i])));
+        }
+        return this.afterSwap.selector;
+    }
+
+    function lockAcquiredHedge(PoolKey calldata, Trigger memory t) external selfOnly {
+        IERC20Min(t.token).transferFrom(t.owner, address(lockPoolManager), t.amount);
+    }
+}
+
+// Pulls only from the swap's own sender, who is the one calling: no stored user's funds
+// are at stake whichever pool it is.
+contract Neg_02_LockPullsSender is LockHook2023 {
+    constructor(IPoolManager m, IPoolManagerLock2023 l) LockHook2023(m, l) {}
+
+    function afterSwap(address sender, PoolKey calldata key, SwapParams calldata, int256)
+        external
+        override
+        returns (bytes4)
+    {
+        require(msg.sender == address(poolManager));
+        lockPoolManager.lock(abi.encodeCall(this.pay, (key, sender, 1)));
+        return this.afterSwap.selector;
+    }
+
+    function pay(PoolKey calldata key, address payer, uint256 amount) external selfOnly {
+        IERC20Min(Currency.unwrap(key.currency1)).transferFrom(payer, address(lockPoolManager), amount);
+    }
+}
+
+// Donation-hook shape: pulls from tx.origin, the user doing the swap, with their own
+// approval. No stored third party is at stake whichever pool it is.
+contract Neg_02_PullsTxOrigin is BaseHook {
+    mapping(address => address) internal recipientOf;
+
+    constructor(IPoolManager m) BaseHook(m) {}
+
+    function getHookPermissions() public pure override returns (Hooks.Permissions memory p) {
+        p.afterSwap = true;
+    }
+
+    function _afterSwap(address, PoolKey calldata key, SwapParams calldata, int256, bytes calldata)
+        internal
+        override
+        returns (bytes4)
+    {
+        IERC20Min(Currency.unwrap(key.currency0)).transferFrom(tx.origin, recipientOf[tx.origin], 1);
+        return this.afterSwap.selector;
+    }
+}
