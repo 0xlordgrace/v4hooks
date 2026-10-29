@@ -1518,3 +1518,95 @@ contract Neg_03_FallbackDispatch is BaseHook {
         }
     }
 }
+
+/// RevertHook shape: position state keyed by the salt (a PositionManager token id). Safe
+/// because beforeRemoveLiquidity only lets the trusted PositionManager through, and the
+/// same sender drives afterRemoveLiquidity, so the salt is always a token it minted.
+abstract contract SaltPositionsBase is BaseHook {
+    struct PositionState {
+        bool active;
+        uint256 owed;
+    }
+
+    address public immutable positionManager;
+    mapping(uint256 => PositionState) internal positions;
+
+    constructor(IPoolManager m, address pm) BaseHook(m) {
+        positionManager = pm;
+    }
+
+    function getHookPermissions() public pure override returns (Hooks.Permissions memory p) {
+        p.beforeRemoveLiquidity = true;
+        p.afterRemoveLiquidity = true;
+    }
+
+    function afterRemoveLiquidity(
+        address,
+        PoolKey calldata,
+        ModifyLiquidityParams calldata params,
+        int256,
+        int256,
+        bytes calldata
+    ) external onlyPoolManager returns (bytes4, int256) {
+        uint256 tokenId = uint256(params.salt);
+        _deactivate(tokenId);
+        return (this.afterRemoveLiquidity.selector, 0);
+    }
+
+    function _deactivate(uint256 tokenId) internal {
+        positions[tokenId].active = false;
+        positions[tokenId].owed = 0;
+    }
+}
+
+contract Neg_02_TrustedManagerSalt is SaltPositionsBase {
+    error Unauthorized();
+
+    constructor(IPoolManager m, address pm) SaltPositionsBase(m, pm) {}
+
+    function _beforeRemoveLiquidity(address sender, PoolKey calldata, ModifyLiquidityParams calldata, bytes calldata)
+        internal
+        view
+        override
+        returns (bytes4)
+    {
+        _checkLiquiditySender(sender);
+        return this.beforeRemoveLiquidity.selector;
+    }
+
+    // RevertHook checks in a helper and also lets the hook's own operations through.
+    function _checkLiquiditySender(address sender) internal view {
+        if (sender != positionManager && sender != address(this)) revert Unauthorized();
+    }
+}
+
+// Same storage, no sender check: any caller of modifyLiquidity picks the salt from any
+// pool, so it can deactivate a victim's position.
+contract Pos_02_UntrustedSalt is SaltPositionsBase {
+    constructor(IPoolManager m, address pm) SaltPositionsBase(m, pm) {}
+
+    function _beforeRemoveLiquidity(address, PoolKey calldata, ModifyLiquidityParams calldata, bytes calldata)
+        internal
+        pure
+        override
+        returns (bytes4)
+    {
+        return this.beforeRemoveLiquidity.selector;
+    }
+}
+
+// The sender check compares against a parameter-free constant the hook doesn't hold; only
+// a check against hook storage pins the salt to one minter.
+contract Pos_02_SaltCheckNotTrusted is SaltPositionsBase {
+    constructor(IPoolManager m, address pm) SaltPositionsBase(m, pm) {}
+
+    function _beforeRemoveLiquidity(address sender, PoolKey calldata, ModifyLiquidityParams calldata, bytes calldata)
+        internal
+        pure
+        override
+        returns (bytes4)
+    {
+        require(sender != address(0));
+        return this.beforeRemoveLiquidity.selector;
+    }
+}

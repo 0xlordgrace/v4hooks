@@ -54,7 +54,8 @@ class UnvalidatedPoolKey:
             impl = hook.implementation(name)
             assert entry and impl
             body = hook.contract.reachable(impl[0])
-            shared_writes = sorted({w for f in body for w in shared_state_writes(hook, f)})
+            per_position = _trusted_salt(hook, name, enabled, body)
+            shared_writes = sorted({w for f in body for w in shared_state_writes(hook, f, per_position)})
             moves = sorted({m for f in body for m in key_currency_moves(f, hook)})
             external = sorted({e for f in body for e in external_state_calls(f, hook)})
             if not shared_writes and not moves and not external:
@@ -255,13 +256,93 @@ def _identifies_pool(expr: Node) -> bool:
     )
 
 
-def shared_state_writes(hook: Hook, fn: Node) -> list[str]:
+def shared_state_writes(hook: Hook, fn: Node, also_keyed=None) -> list[str]:
+    def keyed(e: Node) -> bool:
+        return _derived_from_pool(e) or (also_keyed is not None and also_keyed(e))
+
     out = []
     for lv in lvalues(fn):
-        t = storage_target(lv, hook, keyed_by=_derived_from_pool)
+        t = storage_target(lv, hook, keyed_by=keyed)
         if t and not t[1]:
             out.append(t[0])
     return out
+
+
+# The before-callback that runs, with the same sender, ahead of each liquidity callback.
+LIQUIDITY_GATE = {
+    "beforeAddLiquidity": "beforeAddLiquidity",
+    "afterAddLiquidity": "beforeAddLiquidity",
+    "beforeRemoveLiquidity": "beforeRemoveLiquidity",
+    "afterRemoveLiquidity": "beforeRemoveLiquidity",
+}
+
+
+def _trusted_salt(hook: Hook, name: str, enabled, body: list[Node]):
+    """Storage keyed by ``params.salt`` is per-position (RevertHook's
+    ``_positionStates[uint256(params.salt)]``) when the matching beforeXLiquidity reverts
+    unless ``sender`` equals an address the hook stores (a trusted PositionManager): then
+    every salt is a token id that manager minted. Without that check any caller of
+    modifyLiquidity picks the salt from any pool, so salt-keyed state stays shared.
+    Returns an index predicate for ``storage_target``, or None."""
+    gate = LIQUIDITY_GATE.get(name)
+    if gate is None or not enabled(gate) or not hook.is_implemented(gate):
+        return None
+    impl = hook.implementation(gate)
+    params = impl[0]["parameters"]["parameters"]
+    if not params:
+        return None
+    gate_fns = hook.contract.reachable(impl[0])
+    # The check may sit in a helper (`_checkLiquiditySender(sender)`): follow the sender.
+    senders = _derived_ids(hook, gate_fns, {params[0].get("id")}, lambda n: False)
+    state = _all_state_ids(hook.contract)
+    trusted = False
+    for cond in reverts_or_requires(gate_fns):
+        refs = {n.get("referencedDeclaration") for n in of_type(cond, "Identifier")}
+        if refs & senders and refs & state:
+            trusted = True
+            break
+    if not trusted:
+        return None
+    tainted = _derived_ids(hook, body, set(), _is_salt)
+    return lambda e: any(_is_salt(n) or n.get("referencedDeclaration") in tainted
+                         for n in of_type(e, "Identifier", "MemberAccess"))
+
+
+def _is_salt(n: Node) -> bool:
+    return n.get("memberName") == "salt" and "ModifyLiquidityParams" in type_string(n.get("expression") or {})
+
+
+def _derived_ids(hook: Hook, fns: list[Node], seeds: set[int], is_source) -> set[int]:
+    """``seeds`` plus the locals and internal-helper parameters whose value comes from a
+    seed or from a node matching ``is_source``
+    (`uint256 tokenId = uint256(params.salt); _deactivate(tokenId);`)."""
+    tainted = set(seeds)
+
+    def derived(e: Node | None) -> bool:
+        return bool(e) and any(is_source(n) or n.get("referencedDeclaration") in tainted
+                               for n in of_type(e, "Identifier", "MemberAccess"))
+
+    changed = True
+    while changed:
+        before = len(tainted)
+        for f in fns:
+            body = f.get("body")
+            for d in of_type(body, "VariableDeclarationStatement"):
+                if derived(d.get("initialValue")):
+                    tainted |= {x["id"] for x in d.get("declarations", []) if x}
+            for a in of_type(body, "Assignment"):
+                lhs = a.get("leftHandSide") or {}
+                if lhs.get("nodeType") == "Identifier" and derived(a.get("rightHandSide")):
+                    tainted.add(lhs.get("referencedDeclaration"))
+            for call in of_type(body, "FunctionCall"):
+                ref = hook.unit.by_id.get((call.get("expression") or {}).get("referencedDeclaration", -1)) or {}
+                if ref.get("nodeType") != "FunctionDefinition":
+                    continue
+                for arg, prm in zip(call.get("arguments", []), ref["parameters"]["parameters"]):
+                    if derived(arg):
+                        tainted.add(prm["id"])
+        changed = len(tainted) != before
+    return tainted
 
 
 def key_currency_moves(fn: Node, hook: Hook | None = None) -> list[str]:
